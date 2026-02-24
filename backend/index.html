@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>程式碼註解學習站</title>
+    <!-- 載入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        /* 讓程式碼區塊滾動 */
+        #code-editor { min-height: 400px; }
+        /* 隱藏原生 textarea 捲軸，使用容器捲軸 */
+        textarea { resize: none; }
+    </style>
+</head>
+<body class="min-h-screen p-4 sm:p-8">
+
+    <div id="app-container" class="max-w-7xl mx-auto bg-white shadow-2xl rounded-xl p-6 sm:p-8 space-y-8">
+        <header class="border-b pb-4 border-indigo-200">
+            <h1 class="text-3xl font-extrabold text-gray-800">程式碼註解學習站</h1>
+            <p class="text-sm text-gray-500 mt-1">在這裡儲存您的程式碼片段和學習筆記。</p>
+        </header>
+
+        <!-- 身份與狀態區塊 -->
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center text-sm text-gray-500 bg-indigo-50 p-3 rounded-lg border border-indigo-200">
+            <span id="auth-status" class="font-medium text-red-500">正在初始化...</span>
+            <span class="mt-2 sm:mt-0">用戶 ID (私人資料路徑): <span id="user-id" class="font-mono text-xs break-all text-indigo-700">N/A</span></span>
+        </div>
+
+        <!-- 主操作區塊：左右佈局 -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- 左側：程式碼片段列表 -->
+            <div class="lg:col-span-1 space-y-4">
+                <h2 class="text-xl font-bold text-gray-700">我的已儲存片段</h2>
+                
+                <!-- 新增按鈕 -->
+                <button id="new-snippet-btn" class="w-full py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition shadow-md">
+                    + 新增空白片段
+                </button>
+
+                <!-- 片段列表 -->
+                <div id="snippets-list-container" class="bg-gray-50 p-3 rounded-lg border border-gray-200 min-h-64 max-h-[70vh] overflow-y-auto">
+                    <ul id="snippets-list" class="space-y-2">
+                        <li id="loading-message" class="text-gray-500 text-center p-4">載入中...</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- 右側：編輯與註解區 -->
+            <div class="lg:col-span-2 space-y-4">
+                <input type="text" id="snippet-title" placeholder="片段標題 (例如：Binary Search Algorithm)"
+                       class="w-full p-3 border border-gray-300 rounded-lg text-lg font-semibold focus:ring-2 focus:ring-indigo-500">
+                
+                <!-- 程式碼編輯區 -->
+                <div>
+                    <label for="code-editor" class="block text-sm font-medium text-gray-700 mb-1">程式碼 (可貼上或輸入)</label>
+                    <textarea id="code-editor" class="w-full p-3 border border-gray-300 rounded-lg shadow-inner font-mono text-sm focus:ring-2 focus:ring-indigo-500 h-96"></textarea>
+                </div>
+
+                <!-- 註解區 -->
+                <div>
+                    <label for="notes-editor" class="block text-sm font-medium text-gray-700 mb-1">學習註解與心得</label>
+                    <textarea id="notes-editor" placeholder="輸入您的註解、複雜度分析或學習重點..." 
+                              class="w-full p-3 border border-gray-300 rounded-lg shadow-inner text-base focus:ring-2 focus:ring-indigo-500 h-48"></textarea>
+                </div>
+
+                <!-- 操作按鈕 -->
+                <div class="flex space-x-4 pt-2">
+                    <button id="save-btn" class="flex-1 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-lg disabled:opacity-50">
+                        💾 儲存片段
+                    </button>
+                    <button id="delete-btn" class="py-3 px-6 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 transition shadow-lg disabled:opacity-50" disabled>
+                        🗑️ 刪除當前片段
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK Modules -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        
+        // 確保錯誤時使用自定義提示，避免使用 window.alert()
+        function showMessage(msg, isError = false) {
+            const statusEl = document.getElementById('auth-status');
+            statusEl.textContent = msg;
+            statusEl.classList.remove('text-red-500', 'text-green-600');
+            statusEl.classList.add(isError ? 'text-red-500' : 'text-green-600');
+        }
+
+        let db;
+        let auth;
+        let currentUserId = null;
+        let isAuthReady = false;
+        let currentSnippetId = null; // 當前正在編輯的片段 ID
+
+        // 全局變量檢查與初始化
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // Firestore Collection 路徑 (私有資料路徑)
+        const getCollectionPath = (uid) => `artifacts/${appId}/users/${uid}/annotations`;
+
+        // DOM 元素
+        const userIdElement = document.getElementById('user-id');
+        const loadingMessage = document.getElementById('loading-message');
+        const snippetsList = document.getElementById('snippets-list');
+        const snippetTitleInput = document.getElementById('snippet-title');
+        const codeEditor = document.getElementById('code-editor');
+        const notesEditor = document.getElementById('notes-editor');
+        const saveBtn = document.getElementById('save-btn');
+        const deleteBtn = document.getElementById('delete-btn');
+        const newSnippetBtn = document.getElementById('new-snippet-btn');
+
+
+        /**
+         * 初始化 Firebase 應用和身份驗證
+         */
+        async function initFirebaseAndAuth() {
+            if (!firebaseConfig) {
+                showMessage("錯誤：未提供 Firebase 配置。", true);
+                return;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                showMessage("正在等待驗證...");
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        currentUserId = user.uid;
+                        userIdElement.textContent = currentUserId;
+                        showMessage("已認證 (登入成功)", false);
+                        isAuthReady = true;
+
+                        // 驗證成功後，設置事件和實時監聽
+                        setupEventListeners();
+                        setupRealtimeListener();
+                    } else {
+                        // 嘗試登入
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error("Firebase 初始化或登入失敗:", error);
+                showMessage(`錯誤：${error.message}`, true);
+            }
+        }
+
+        /**
+         * 設置按鈕事件監聽器
+         */
+        function setupEventListeners() {
+            saveBtn.addEventListener('click', handleSaveSnippet);
+            deleteBtn.addEventListener('click', handleDeleteSnippet);
+            newSnippetBtn.addEventListener('click', handleNewSnippet);
+        }
+
+        /**
+         * 處理新增空白片段
+         */
+        function handleNewSnippet() {
+            currentSnippetId = null; // 清除當前 ID
+            snippetTitleInput.value = '';
+            codeEditor.value = '';
+            notesEditor.value = '';
+            deleteBtn.disabled = true;
+            saveBtn.textContent = '💾 儲存片段';
+            showMessage("開始建立新片段...");
+        }
+
+        /**
+         * 處理儲存或更新片段 (Create/Update - setDoc)
+         */
+        async function handleSaveSnippet() {
+            if (!currentUserId) return showMessage("錯誤：用戶未登入。", true);
+
+            const title = snippetTitleInput.value.trim();
+            const code = codeEditor.value;
+            const notes = notesEditor.value;
+
+            if (!title) {
+                return showMessage("標題不能為空。", true);
+            }
+            if (!code && !notes) {
+                return showMessage("程式碼和註解不能同時為空。", true);
+            }
+
+            saveBtn.disabled = true;
+            saveBtn.textContent = '儲存中...';
+
+            try {
+                // 如果是新片段，讓 Firestore 自動產生 ID
+                const docId = currentSnippetId || doc(collection(db, getCollectionPath(currentUserId))).id;
+                
+                await setDoc(doc(db, getCollectionPath(currentUserId), docId), {
+                    title: title,
+                    code: code,
+                    notes: notes,
+                    createdAt: serverTimestamp(), // 使用服務器時間戳
+                    userId: currentUserId,
+                });
+
+                currentSnippetId = docId; // 更新當前 ID
+                deleteBtn.disabled = false;
+                showMessage(`片段 "${title}" 儲存成功！`, false);
+
+            } catch (error) {
+                console.error("儲存片段失敗:", error);
+                showMessage(`儲存失敗: ${error.message}`, true);
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.textContent = '💾 儲存片段';
+            }
+        }
+        
+        /**
+         * 處理刪除片段 (Delete - deleteDoc)
+         */
+        async function handleDeleteSnippet() {
+            if (!currentUserId || !currentSnippetId) return;
+
+            // 這裡使用內建的 confirm 作為一個快速的替代方案
+            if (!window.confirm(`確定要刪除片段 "${snippetTitleInput.value}" 嗎？此操作無法撤銷。`)) {
+                return;
+            }
+
+            deleteBtn.disabled = true;
+            try {
+                await deleteDoc(doc(db, getCollectionPath(currentUserId), currentSnippetId));
+                
+                // 刪除成功後，清空編輯區
+                handleNewSnippet(); 
+                showMessage("片段已成功刪除。", false);
+
+            } catch (error) {
+                console.error("刪除片段失敗:", error);
+                showMessage(`刪除失敗: ${error.message}`, true);
+            } finally {
+                deleteBtn.disabled = false;
+            }
+        }
+
+
+        /**
+         * 實時監聽 Firestore 儲存片段列表 (Read)
+         */
+        function setupRealtimeListener() {
+            if (!db || !isAuthReady) return;
+
+            const snippetsQuery = query(collection(db, getCollectionPath(currentUserId)));
+
+            onSnapshot(snippetsQuery, (snapshot) => {
+                const snippets = [];
+                snapshot.forEach(doc => {
+                    snippets.push({ id: doc.id, ...doc.data() });
+                });
+
+                // 根據標題或創建時間排序
+                snippets.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+
+                renderSnippetsList(snippets);
+            }, (error) => {
+                console.error("實時監聽失敗:", error);
+                showMessage("錯誤：無法載入已儲存片段。", true);
+            });
+        }
+
+        /**
+         * 渲染片段列表到 DOM
+         * @param {Array<Object>} snippets 片段陣列
+         */
+        function renderSnippetsList(snippets) {
+            snippetsList.innerHTML = ''; // 清空現有列表
+            loadingMessage.style.display = 'none';
+
+            if (snippets.length === 0) {
+                snippetsList.innerHTML = `<li class="text-gray-500 text-center p-4">您目前沒有任何儲存的片段。</li>`;
+                return;
+            }
+
+            snippets.forEach(snippet => {
+                const li = document.createElement('li');
+                li.className = `p-3 rounded-lg cursor-pointer transition hover:bg-indigo-100 ${snippet.id === currentSnippetId ? 'bg-indigo-200 font-bold' : 'bg-white border border-gray-200'}`;
+                li.textContent = snippet.title || `[無標題]`;
+                li.title = `創建於: ${snippet.createdAt ? new Date(snippet.createdAt.toMillis()).toLocaleString() : 'N/A'}`;
+                
+                li.onclick = () => loadSnippet(snippet);
+                snippetsList.appendChild(li);
+            });
+        }
+
+        /**
+         * 載入選定的片段到編輯區
+         * @param {Object} snippet 片段物件
+         */
+        function loadSnippet(snippet) {
+            currentSnippetId = snippet.id;
+            snippetTitleInput.value = snippet.title || '';
+            codeEditor.value = snippet.code || '';
+            notesEditor.value = snippet.notes || '';
+            
+            deleteBtn.disabled = false;
+            saveBtn.textContent = '💾 更新片段';
+            
+            // 重新渲染列表以更新選中狀態
+            // 由於 onSnapshot 會觸發 renderSnippetsList，這裡只需要確保選中狀態正確即可
+            Array.from(snippetsList.children).forEach(el => {
+                if(el.textContent === (snippet.title || '[無標題]')) {
+                    el.className = el.className.replace(/bg-white border-gray-200|bg-indigo-200/g, 'bg-indigo-200 font-bold');
+                } else {
+                    el.className = el.className.replace(/bg-indigo-200 font-bold/g, 'bg-white border border-gray-200');
+                }
+            });
+            showMessage(`已載入片段: "${snippet.title}"`, false);
+        }
+
+        // 啟動應用程式
+        window.onload = initFirebaseAndAuth;
+
+    </script>
+</body>
+</html>
